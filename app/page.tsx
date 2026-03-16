@@ -2,30 +2,49 @@
 
 import { useState } from "react";
 import { AnimatePresence } from "framer-motion";
+import { useSession } from "next-auth/react";
 import LandingPage from "@/components/LandingPage";
 import FeelingCheckIn from "@/components/FeelingCheckIn";
 import RecommendationScreen from "@/components/RecommendationScreen";
 import MeditationScreen from "@/components/MeditationScreen";
 import { Feeling, Meditation } from "@/data/meditations";
 import { useTimeOfDay } from "@/hooks/useTimeOfDay";
+import { CalendarEvent } from "@/app/api/calendar/route";
 
-// ─── All possible screens in the app ─────────────────────────────────────────
 type Screen = "landing" | "checkin" | "recommendations" | "meditation";
 
 export default function Home() {
-  const [screen, setScreen] = useState<Screen>("landing");
-  const [selectedFeeling, setSelectedFeeling] = useState<Feeling | null>(null);
+  const [screen, setScreen]                     = useState<Screen>("landing");
+  const [selectedFeeling, setSelectedFeeling]   = useState<Feeling | null>(null);
   const [selectedMeditation, setSelectedMeditation] = useState<Meditation | null>(null);
+  const [calendarEvents, setCalendarEvents]     = useState<CalendarEvent[] | null>(null);
 
-  // Keep the same gradient on <main> so the body never shows through
-  // during the gap between one screen exiting and the next entering.
+  const { data: session } = useSession();
+
   const tod = useTimeOfDay();
   const gradient =
     tod?.gradient ??
     "linear-gradient(180deg, #7BAFD0 0%, #9EC8E0 14%, #C0DAE8 28%, #DCD5CA 48%, #BDD0AD 68%, #8FAF8A 88%, #6A9470 100%)";
 
-  // ── Navigation handlers ──────────────────────────────────────────────────
+  // Called after Google sign-in — fetch calendar events immediately
+  async function handleCalendarConnected(accessToken: string) {
+    try {
+      const res = await fetch("/api/calendar", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) { setCalendarEvents([]); return; }
+      const data = await res.json();
+      setCalendarEvents(data.events ?? []);
+    } catch {
+      setCalendarEvents([]);
+    }
+  }
+
   function handleBeginJourney() {
+    // If already signed in but haven't fetched events yet, fetch now
+    if (session?.accessToken && calendarEvents === null) {
+      handleCalendarConnected(session.accessToken);
+    }
     setScreen("checkin");
   }
 
@@ -41,16 +60,14 @@ export default function Home() {
 
   return (
     <main style={{ background: gradient, minHeight: "100vh" }}>
-      {/*
-        AnimatePresence "wait" mode: the exiting screen fully fades out
-        before the entering screen starts — keeps transitions clean.
-      */}
       <AnimatePresence mode="wait">
 
         {screen === "landing" && (
           <LandingPage
             key="landing"
             onBegin={handleBeginJourney}
+            onCalendarConnected={handleCalendarConnected}
+            calendarConnected={calendarEvents !== null}
           />
         )}
 
@@ -66,6 +83,7 @@ export default function Home() {
           <RecommendationScreen
             key="recommendations"
             feeling={selectedFeeling}
+            calendarEvents={calendarEvents ?? []}
             onSelectMeditation={handleSelectMeditation}
             onBack={() => setScreen("checkin")}
           />

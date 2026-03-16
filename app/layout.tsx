@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Lora } from "next/font/google";
+import NextAuthProvider from "@/components/NextAuthProvider";
 import "./globals.css";
 
 // Display font: elegant, organic, slightly botanical — perfect for calm UI
@@ -33,7 +34,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${cormorant.variable} ${lora.variable}`}>
-        {children}
+        <NextAuthProvider>{children}</NextAuthProvider>
       </body>
     </html>
   );

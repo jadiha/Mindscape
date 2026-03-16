@@ -1,24 +1,24 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import { useTimeOfDay } from "@/hooks/useTimeOfDay";
-import {
-  Feeling,
-  Meditation,
-  FEELING_CONFIG,
-  getRecommendations,
-} from "@/data/meditations";
+import { Feeling, Meditation, FEELING_CONFIG } from "@/data/meditations";
+import { CalendarEvent } from "@/app/api/calendar/route";
+import { extractCalendarContext } from "@/lib/contextExtractor";
+import { getRecommendationsFromEngine } from "@/lib/recommendationEngine";
 import { VideoResult } from "@/lib/youtube";
 
 interface RecommendationScreenProps {
-  feeling: Feeling;
-  onSelectMeditation: (meditation: Meditation) => void;
-  onBack: () => void;
+  feeling:              Feeling;
+  calendarEvents:       CalendarEvent[];
+  onSelectMeditation:   (meditation: Meditation) => void;
+  onBack:               () => void;
 }
 
 export default function RecommendationScreen({
   feeling,
+  calendarEvents,
   onSelectMeditation,
   onBack,
 }: RecommendationScreenProps) {
@@ -32,43 +32,51 @@ export default function RecommendationScreen({
 
   const feelingConfig = FEELING_CONFIG[feeling];
 
-  const [loading, setLoading] = useState(true);
+  // ── Extract calendar context ──────────────────────────────────────────────
+  const calendarCtx = useMemo(
+    () => extractCalendarContext(calendarEvents),
+    [calendarEvents]
+  );
+
+  // ── Score-based recommendations ───────────────────────────────────────────
+  const baseRecommendations = useMemo(() => {
+    if (!tod) return [];
+    return getRecommendationsFromEngine({
+      feeling,
+      period:          tod.period,
+      calendarContext: calendarCtx.context,
+      isSoon:          calendarCtx.isSoon,
+    });
+  }, [feeling, tod, calendarCtx]);
+
+  // ── Fetch one YouTube video per card in parallel ───────────────────────────
+  const [loading, setLoading]       = useState(true);
   const [meditations, setMeditations] = useState<Meditation[]>([]);
 
   useEffect(() => {
-    if (!tod) return;
+    if (!baseRecommendations.length) return;
 
-    // Step 1 — pick 3 curated recommendations for this feeling + time of day
-    const recommendations = getRecommendations(feeling, tod.period);
+    setLoading(true);
 
-    // Step 2 — for each recommendation, fetch its own YouTube video in parallel
     Promise.all(
-      recommendations.map(async (m): Promise<Meditation> => {
+      baseRecommendations.map(async (m): Promise<Meditation> => {
         try {
           const res = await fetch(
             `/api/meditations?q=${encodeURIComponent(m.youtubeQuery)}`
           );
-          if (!res.ok) return m; // no API key or error → keep curated card as-is
-
+          if (!res.ok) return m;
           const data: { result: VideoResult | null } = await res.json();
           if (!data.result) return m;
-
-          // Attach the video data to the curated card
-          return {
-            ...m,
-            videoId:      data.result.videoId,
-            thumbnail:    data.result.thumbnail,
-            channelTitle: data.result.channelTitle,
-          };
+          return { ...m, videoId: data.result.videoId, thumbnail: data.result.thumbnail, channelTitle: data.result.channelTitle };
         } catch {
-          return m; // network error → keep curated card as-is
+          return m;
         }
       })
     ).then((results) => {
       setMeditations(results);
       setLoading(false);
     });
-  }, [feeling, tod]);
+  }, [baseRecommendations]);
 
   return (
     <motion.div
@@ -134,6 +142,33 @@ export default function RecommendationScreen({
             {feelingConfig.label}
           </span>
         </motion.div>
+
+        {/* Calendar context banner — only shown when an event was detected */}
+        {calendarCtx.context && calendarCtx.eventTitle && (
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.5 }}
+            className="flex items-center gap-2 mb-5 px-4 py-2 rounded-full font-body"
+            style={{
+              fontSize: "0.68rem",
+              letterSpacing: "0.12em",
+              color: textSecondary,
+              background: "rgba(255,255,255,0.18)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+              border: "1px solid rgba(255,255,255,0.28)",
+            }}
+          >
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
+              <rect x="1" y="2" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+              <path d="M4 1v2M8 1v2M1 5h10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+            {calendarCtx.isSoon && calendarCtx.minutesUntil !== null
+              ? `${calendarCtx.eventTitle} in ${calendarCtx.minutesUntil} min`
+              : `Preparing you for: ${calendarCtx.eventTitle}`}
+          </motion.div>
+        )}
 
         {/* Supportive message */}
         <motion.p
@@ -220,7 +255,6 @@ function SkeletonCard({ index }: { index: number }) {
         border: "1px solid rgba(255,255,255,0.2)",
       }}
     >
-      {/* Accent strip placeholder */}
       <div className="w-1 shrink-0 animate-pulse"
         style={{ background: "rgba(255,255,255,0.2)" }} />
       <div className="p-5 flex-1">
@@ -242,12 +276,12 @@ function SkeletonCard({ index }: { index: number }) {
 // ─── Meditation card ──────────────────────────────────────────────────────────
 
 interface MeditationCardProps {
-  meditation: Meditation;
-  index: number;
-  accentColor: string;
-  textPrimary: string;
+  meditation:   Meditation;
+  index:        number;
+  accentColor:  string;
+  textPrimary:  string;
   textSecondary: string;
-  onSelect: () => void;
+  onSelect:     () => void;
 }
 
 function MeditationCard({
@@ -271,32 +305,26 @@ function MeditationCard({
         border: "1px solid rgba(255,255,255,0.26)",
       }}
     >
-      {/* Accent strip — feeling color, full card height */}
-      <div
-        className="w-1 shrink-0"
-        style={{ background: accentColor.replace("0.45)", "0.7)") }}
-      />
+      {/* Feeling-colored accent strip */}
+      <div className="w-1 shrink-0"
+        style={{ background: accentColor.replace("0.45)", "0.7)") }} />
 
       <div className="p-5 flex-1">
-        {/* Title */}
         <h3 className="font-display font-light leading-snug mb-1"
           style={{ fontSize: "1.0rem", color: textPrimary }}>
           {meditation.title}
         </h3>
 
-        {/* Channel name or duration */}
         <p className="font-body mb-3"
           style={{ fontSize: "0.7rem", letterSpacing: "0.08em", color: textSecondary, opacity: 0.6 }}>
           {meditation.channelTitle ?? meditation.duration}
         </p>
 
-        {/* Description */}
         <p className="font-body mb-4 leading-relaxed"
           style={{ fontSize: "0.8rem", color: textSecondary }}>
           {meditation.description}
         </p>
 
-        {/* Begin button */}
         <div className="flex justify-end">
           <motion.button
             whileHover={{ scale: 1.04, x: 2 }}
